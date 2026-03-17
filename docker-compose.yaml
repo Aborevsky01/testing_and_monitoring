@@ -1,0 +1,18 @@
+version: '3.9'
+
+services:
+  mlflow_example:
+    build:
+      context: ./
+      dockerfile: ./Dockerfile
+    image: ml_service:$USER
+    container_name: ml_service_$USER
+    working_dir: /app
+    volumes:
+      - ./:/app
+    ports:
+      - 1488:8890
+    environment:
+      - MLFLOW_TRACKING_URI=http://158.160.2.37:5000/
+      - DEFAULT_RUN_ID=${DEFAULT_RUN_ID}
+    command: uvicorn main:app --host 0.0.0.0 --port 8890
