@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
+import warnings
 from collections import deque
 from collections.abc import Callable
 
@@ -88,10 +89,23 @@ class EvidentlyMonitor:
         report_factory = self.report_factory or _default_report_factory
 
         report = report_factory()
-        result = report.run(
-            reference_data=reference_data,
-            current_data=current_data,
-        )
+        # Evidently may trigger scipy runtime warnings on tiny or near-constant
+        # windows; the report is still produced successfully, so we keep logs clean.
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                'ignore',
+                message='divide by zero encountered in divide',
+                category=RuntimeWarning,
+            )
+            warnings.filterwarnings(
+                'ignore',
+                message='invalid value encountered in divide',
+                category=RuntimeWarning,
+            )
+            result = report.run(
+                reference_data=reference_data,
+                current_data=current_data,
+            )
 
         workspace = workspace_factory(self.workspace_url)
         workspace.add_run(self.project_id, result)
