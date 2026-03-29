@@ -1,10 +1,12 @@
 from typing import Any
+import asyncio
 from contextlib import asynccontextmanager
 import time
 from fastapi import FastAPI, HTTPException
 from fastapi import Request
 
 from ml_service import config
+from ml_service.evidently_monitor import EvidentlyMonitor
 from ml_service.features import (
     FeatureSchemaError,
     FeatureValidationError,
@@ -33,6 +35,13 @@ from ml_service.schemas import (
 
 
 MODEL = Model()
+EVIDENTLY_MONITOR = EvidentlyMonitor(
+    workspace_url=config.evidently_url(),
+    project_id=config.evidently_project_id(),
+    report_interval_seconds=config.evidently_report_interval_seconds(),
+    reference_size=config.evidently_reference_size(),
+    current_size=config.evidently_current_size(),
+)
 
 
 @asynccontextmanager
@@ -62,8 +71,11 @@ async def lifespan(app: FastAPI):
             features=(),
             available=False,
         )
+    stop_event = asyncio.Event()
+    report_task = asyncio.create_task(EVIDENTLY_MONITOR.run_forever(stop_event))
     yield
-    # add any teardown logic here if needed
+    stop_event.set()
+    await report_task
 
 
 def create_app() -> FastAPI:
@@ -126,7 +138,8 @@ def create_app() -> FastAPI:
         try:
             df = to_dataframe(request, needed_columns=state.features)
             observe_preprocess(preprocess_timer.elapsed(), 'success')
-            observe_features(df.iloc[0].to_dict())
+            feature_row = df.iloc[0].to_dict()
+            observe_features(feature_row)
 
             inference_timer = RequestTimer()
             prediction, probability = MODEL.predict(df)
@@ -136,6 +149,11 @@ def create_app() -> FastAPI:
                 state.model_type,
             )
             observe_prediction(prediction, probability)
+            EVIDENTLY_MONITOR.record(
+                features=feature_row,
+                prediction=prediction,
+                probability=probability,
+            )
         except FeatureSchemaError as exc:
             observe_preprocess(preprocess_timer.elapsed(), 'schema_error')
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -157,6 +175,7 @@ def create_app() -> FastAPI:
         run_id = req.run_id
         try:
             MODEL.set(run_id=run_id)
+            EVIDENTLY_MONITOR.reset()
             state = MODEL.get()
             update_model_metrics(
                 run_id=state.run_id,
