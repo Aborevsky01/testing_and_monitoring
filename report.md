@@ -1,5 +1,12 @@
 # Отчёт по домашнему заданию: тестирование и мониторинг ML-сервиса
 
+![Python](https://img.shields.io/badge/Python-3.12-3776AB?logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-service-009688?logo=fastapi&logoColor=white)
+![MLflow](https://img.shields.io/badge/MLflow-models-0194E2?logo=mlflow&logoColor=white)
+![Prometheus](https://img.shields.io/badge/Prometheus-metrics-E6522C?logo=prometheus&logoColor=white)
+![Grafana](https://img.shields.io/badge/Grafana-alerting-F46800?logo=grafana&logoColor=white)
+![Evidently](https://img.shields.io/badge/Evidently-drift_monitoring-6C63FF)
+
 ## 1. Доработка сервиса и повышение надёжности
 
 В сервис были добавлены проверки и обработка ошибок, чтобы приложение продолжало корректно работать при нештатных сценариях и возвращало понятные ответы клиенту.
@@ -19,6 +26,25 @@
 - при смене модели сбрасывается буфер накопленных данных для Evidently, чтобы не смешивать статистику разных моделей.
 
 Дополнительно был доработан `/health`: он возвращает текущий `run_id`, тип модели, список требуемых фичей и текст последней ошибки, если модель недоступна.
+
+Пример ответа `/health` после успешной загрузки модели:
+
+```json
+{
+  "status": "ok",
+  "run_id": "edfad2bc1f1e4681a4174ee5bb09bd35",
+  "model_type": "RandomForestClassifier",
+  "features": [
+    "race",
+    "sex",
+    "native.country",
+    "occupation",
+    "education",
+    "capital.gain"
+  ],
+  "error": null
+}
+```
 
 ## 2. Тесты
 
@@ -55,9 +81,26 @@
 python3 -m unittest discover -s tests -v
 ```
 
+В рамках разработки дополнительно использовалась быстрая проверка импорта и синтаксиса:
+
+```bash
+python3 -m compileall ml_service tests main.py
+```
+
 ## 3. Мониторинг сервиса
 
 В сервис добавлен Prometheus-совместимый эндпоинт `/metrics`. Все пользовательские метрики имеют префикс `bor_`, чтобы не пересекаться с метриками других студентов в общем Prometheus.
+
+Пример экспортируемых метрик:
+
+```text
+bor_ml_service_requests_total
+bor_ml_service_request_duration_seconds
+bor_ml_service_preprocess_duration_seconds
+bor_ml_service_inference_duration_seconds
+bor_ml_service_model_probability
+bor_ml_service_current_model_info
+```
 
 ### 3.1. Технические метрики
 
@@ -126,6 +169,15 @@ python3 -m unittest discover -s tests -v
 
 Для временных метрик в Grafana использовались перцентили `75`, `90`, `95`, `99`, `99.9`, рассчитанные через `histogram_quantile`.
 
+Пример запроса для панели с `p95` времени ответа сервиса:
+
+```promql
+histogram_quantile(
+  0.95,
+  sum by (le) (rate(bor_ml_service_request_duration_seconds_bucket[5m]))
+)
+```
+
 ## 4. Алертинг
 
 В Grafana были добавлены алерты на техническое состояние сервиса и на поведение модели. Для уведомлений использован Telegram contact point, чтобы проверяющий мог увидеть реальную доставку уведомлений.
@@ -147,6 +199,12 @@ python3 -m unittest discover -s tests -v
 - генерация смещённого потока запросов, чтобы показать сдвиг распределения предсказаний и вероятностей;
 - нагрузочный сценарий для проверки алертов на latency.
 
+Пример выражения для алерта на `5xx`:
+
+```promql
+sum(increase(bor_ml_service_requests_total{status_code=~"5.."}[5m])) > 0
+```
+
 ## 5. Мониторинг дрифта через Evidently
 
 В сервис добавлен фоновый мониторинг дрифта данных и предсказаний с использованием Evidently.
@@ -166,6 +224,22 @@ python3 -m unittest discover -s tests -v
 - `EVIDENTLY_REPORT_INTERVAL_SECONDS=30`;
 - `EVIDENTLY_REFERENCE_SIZE=20`;
 - `EVIDENTLY_CURRENT_SIZE=20`.
+
+Пример запуска контейнера для демонстрации drift-мониторинга:
+
+```bash
+docker run --rm \
+  -p 8890:8890 \
+  -e MLFLOW_TRACKING_URI=http://158.160.2.37:5000/ \
+  -e DEFAULT_RUN_ID=edfad2bc1f1e4681a4174ee5bb09bd35 \
+  -e EVIDENTLY_URL=http://158.160.2.37:8000/ \
+  -e EVIDENTLY_PROJECT_ID=<project_id> \
+  -e EVIDENTLY_REPORT_INTERVAL_SECONDS=30 \
+  -e EVIDENTLY_REFERENCE_SIZE=20 \
+  -e EVIDENTLY_CURRENT_SIZE=20 \
+  --name bor-ml-service \
+  bor-ml-service
+```
 
 В Evidently были получены отчёты как для базового потока запросов, так и для смещённого трафика. Факт drift был зафиксирован отдельным запуском после генерации целенаправленно изменённого потока входных данных.
 
